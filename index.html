@@ -164,23 +164,42 @@
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
     /* ==========================================================
+       0. PHÁT HIỆN MOBILE & WEBGL
+       ========================================================== */
+    const isMobile = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(navigator.userAgent)
+      || (window.innerWidth <= 768);
+
+    /* ==========================================================
        1. RENDERER
        ========================================================== */
     const canvas = document.getElementById('viewer-canvas');
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: !isMobile,        // Tắt antialias trên mobile để tiết kiệm GPU
       alpha: false,
+      powerPreference: isMobile ? 'low-power' : 'high-performance',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Mobile: giới hạn pixel ratio = 1 để giảm tải GPU
+    renderer.setPixelRatio(isMobile ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
-    // Tone-mapping giúp màu gạch cổ trông tự nhiên hơn
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // Bật shadow cho ánh sáng mặt trời
-    renderer.shadowMap.enabled = true;
+    // Tắt shadow trên mobile để tiết kiệm bộ nhớ
+    renderer.shadowMap.enabled = !isMobile;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // Xử lý lỗi WebGL context lost (nguyên nhân "sad face")
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      document.getElementById('loading-overlay').classList.remove('hidden');
+      document.querySelector('.loading-title').textContent = '⚠️ GPU bị quá tải';
+      document.getElementById('progress-text').textContent = 'Vui lòng tải lại trang';
+      document.getElementById('progress-fill').style.width = '0%';
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      location.reload();
+    });
 
     /* ==========================================================
        2. SCENE & BACKGROUND – Bầu trời xanh + mây trắng
@@ -394,12 +413,11 @@
 
     /* ──────────────────────────────────────────────
        ★ THAY ĐỔI LINK FILE 3D TẠI ĐÂY ★
-       Thay 'cham_tower.glb' bằng đường dẫn tới
-       file .glb / .gltf của bạn.
-       Ví dụ:  './models/my_tower.glb'
-                'https://example.com/model.glb'
+       - File gốc:  cham_tower.glb            (~57 MB, 2.5M triangles)
+       - File tối ưu: cham_tower_300k_draco.glb (~6 MB, 300K triangles, full texture)
+       Thay bằng đường dẫn của bạn nếu cần.
        ────────────────────────────────────────────── */
-    const MODEL_URL = './cham_tower.glb';
+    const MODEL_URL = './cham_tower_300k_draco.glb';
 
     gltfLoader.load(
       MODEL_URL,
@@ -408,11 +426,11 @@
       (gltf) => {
         const model = gltf.scene;
 
-        // Bật shadow cho tất cả mesh con
+        // Bật shadow cho tất cả mesh con (chỉ trên desktop)
         model.traverse((child) => {
           if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
+            child.castShadow = !isMobile;
+            child.receiveShadow = !isMobile;
           }
         });
 
