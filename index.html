@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tháp Chăm 3D Viewer</title>
+
+  <!-- ============================================================
+       STYLE – Loading overlay + canvas toàn màn hình
+       ============================================================ -->
+  <style>
+    /* ---------- Reset ---------- */
+    *,
+    *::before,
+    *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      overflow: hidden;
+      background: #0a0a0f;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      color: #e8e0d4;
+    }
+
+    /* ---------- Canvas ---------- */
+    #viewer-canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* ---------- Loading overlay ---------- */
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 100%);
+      transition: opacity 0.8s ease, visibility 0.8s ease;
+    }
+
+    #loading-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    /* Spinner */
+    .spinner {
+      width: 64px;
+      height: 64px;
+      border: 4px solid rgba(212, 175, 120, 0.15);
+      border-top-color: #d4af78;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-bottom: 28px;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .loading-title {
+      font-size: 1.4rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: #d4af78;
+      margin-bottom: 12px;
+    }
+
+    /* Progress bar */
+    .progress-track {
+      width: 260px;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #d4af78, #e8c98a);
+      border-radius: 3px;
+      transition: width 0.25s ease;
+    }
+
+    .progress-text {
+      font-size: 0.85rem;
+      color: rgba(232, 224, 212, 0.5);
+    }
+
+    /* ---------- Info badge (góc dưới) ---------- */
+    #info-badge {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(26, 26, 46, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(212, 175, 120, 0.2);
+      border-radius: 12px;
+      padding: 10px 22px;
+      font-size: 0.8rem;
+      color: rgba(232, 224, 212, 0.6);
+      pointer-events: none;
+      z-index: 10;
+      opacity: 0;
+      transition: opacity 0.6s ease;
+    }
+
+    #info-badge.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ============================================================
+       LOADING OVERLAY
+       ============================================================ -->
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-title">Đang tải mô hình 3D…</div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <div class="progress-text" id="progress-text">0 %</div>
+  </div>
+
+  <!-- Canvas cho Three.js -->
+  <canvas id="viewer-canvas"></canvas>
+
+  <!-- Chú thích nhỏ -->
+  <div id="info-badge">🖱️ Kéo chuột để xoay · Cuộn để phóng to/thu nhỏ · Click phải để dịch chuyển</div>
+
+  <!-- ============================================================
+       THREE.JS SCRIPTS (import từ CDN)
+       ============================================================ -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three":              "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/":      "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+    /* ==========================================================
+       1. RENDERER
+       ========================================================== */
+    const canvas = document.getElementById('viewer-canvas');
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: false,
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    // Tone-mapping giúp màu gạch cổ trông tự nhiên hơn
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Bật shadow cho ánh sáng mặt trời
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    /* ==========================================================
+       2. SCENE & BACKGROUND – Bầu trời xanh + mây trắng
+       ========================================================== */
+    const scene = new THREE.Scene();
+
+    // Tạo bầu trời bằng shader procedural
+    function createSky() {
+      const skyGeo = new THREE.SphereGeometry(500, 32, 32);
+      const skyMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+        },
+        vertexShader: `
+          varying vec3 vWorldPos;
+          void main() {
+            vec4 wp = modelMatrix * vec4(position, 1.0);
+            vWorldPos = wp.xyz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime;
+          varying vec3 vWorldPos;
+
+          // Hash functions for noise
+          float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+          }
+
+          float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }
+
+          // FBM (Fractal Brownian Motion) cho mây tự nhiên
+          float fbm(vec2 p) {
+            float v = 0.0;
+            float a = 0.5;
+            vec2 shift = vec2(100.0);
+            for (int i = 0; i < 5; i++) {
+              v += a * noise(p);
+              p = p * 2.0 + shift;
+              a *= 0.5;
+            }
+            return v;
+          }
+
+          void main() {
+            vec3 dir = normalize(vWorldPos);
+            float elevation = dir.y;
+
+            // === Gradient bầu trời xanh ===
+            vec3 skyTop    = vec3(0.15, 0.45, 0.95);  // Xanh đậm trên cao
+            vec3 skyMid    = vec3(0.35, 0.60, 0.98);  // Xanh tươi
+            vec3 skyBottom = vec3(0.55, 0.75, 1.0);   // Xanh nhạt gần chân trời
+            vec3 horizon   = vec3(0.85, 0.90, 0.98);  // Gần trắng ở chân trời
+
+            vec3 skyColor;
+            if (elevation < 0.0) {
+              // Dưới chân trời
+              skyColor = mix(horizon * 0.7, horizon, smoothstep(-0.1, 0.0, elevation));
+            } else if (elevation < 0.08) {
+              skyColor = mix(horizon, skyBottom, smoothstep(0.0, 0.08, elevation));
+            } else if (elevation < 0.3) {
+              skyColor = mix(skyBottom, skyMid, smoothstep(0.08, 0.3, elevation));
+            } else {
+              skyColor = mix(skyMid, skyTop, smoothstep(0.3, 0.9, elevation));
+            }
+
+            // === Mây trắng procedural ===
+            if (elevation > -0.05) {
+              // Tọa độ UV cho mây (nhìn từ trên xuống, chiếu lên dome)
+              vec2 cloudUV = dir.xz / max(0.1, dir.y + 0.1) * 0.8;
+              // Trôi mây chậm
+              cloudUV += uTime * 0.008;
+
+              float cloud = fbm(cloudUV * 2.5);
+              // Lớp mây thứ 2 cho chi tiết
+              float cloud2 = fbm(cloudUV * 5.0 + 3.0);
+              cloud = cloud * 0.7 + cloud2 * 0.3;
+
+              // Ngưỡng để tạo mây rõ nét
+              float cloudMask = smoothstep(0.35, 0.65, cloud);
+              // Mây mỏng dần ở gần chân trời
+              cloudMask *= smoothstep(-0.02, 0.15, elevation);
+              // Mây giảm ở đỉnh trời
+              cloudMask *= smoothstep(0.9, 0.5, elevation);
+
+              // Màu mây: trắng sáng, đáy hơi xám
+              vec3 cloudBright = vec3(1.0, 1.0, 1.0);
+              vec3 cloudDark   = vec3(0.8, 0.82, 0.88);
+              vec3 cloudColor  = mix(cloudDark, cloudBright, cloud);
+
+              skyColor = mix(skyColor, cloudColor, cloudMask * 0.9);
+            }
+
+            gl_FragColor = vec4(skyColor, 1.0);
+          }
+        `,
+        side: THREE.BackSide,
+        depthWrite: false,
+      });
+      return { mesh: new THREE.Mesh(skyGeo, skyMat), material: skyMat };
+    }
+
+    const sky = createSky();
+    scene.add(sky.mesh);
+
+    // Fog nhẹ màu xanh trời để hòa vào chân trời
+    scene.fog = new THREE.FogExp2(0x8ab4e8, 0.003);
+
+    /* ==========================================================
+       3. CAMERA
+       ========================================================== */
+    const camera = new THREE.PerspectiveCamera(
+      45,                                       // FOV
+      window.innerWidth / window.innerHeight,   // Aspect
+      0.1,                                      // Near
+      2000                                      // Far
+    );
+    camera.position.set(15, 10, 20);
+
+    /* ==========================================================
+       4. ORBIT CONTROLS – xoay / phóng / dịch chuyển
+       ========================================================== */
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;   // Mượt hơn
+    controls.dampingFactor = 0.06;
+    controls.minDistance = 2;
+    controls.maxDistance = 200;
+    controls.maxPolarAngle = Math.PI / 2 + 0.05;  // Không nhìn ngược dưới đất
+    controls.target.set(0, 4, 0);      // Nhìn vào giữa tháp
+
+    /* ==========================================================
+       5. ÁNH SÁNG – ban ngày nắng ấm, làm nổi gạch cổ
+       ========================================================== */
+
+    // 5a. Ambient – ánh sáng môi trường tông ấm
+    const ambientLight = new THREE.AmbientLight(0xfff8f0, 0.7);
+    scene.add(ambientLight);
+
+    // 5b. Hemisphere – trời xanh phía trên, đất nâu phía dưới
+    const hemiLight = new THREE.HemisphereLight(
+      0x87ceeb,   // Xanh trời
+      0x8b7355,   // Nâu đất
+      0.8
+    );
+    scene.add(hemiLight);
+
+    // 5c. DirectionalLight – ánh nắng mặt trời chính
+    const sunLight = new THREE.DirectionalLight(0xfff4d6, 2.0);
+    sunLight.position.set(25, 35, 20);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
+    sunLight.shadow.camera.near = 0.5;
+    sunLight.shadow.camera.far = 120;
+    sunLight.shadow.camera.left = -40;
+    sunLight.shadow.camera.right = 40;
+    sunLight.shadow.camera.top = 40;
+    sunLight.shadow.camera.bottom = -40;
+    sunLight.shadow.bias = -0.0005;
+    scene.add(sunLight);
+
+    // 5d. Fill light – ánh sáng bổ sung từ bầu trời
+    const fillLight = new THREE.DirectionalLight(0x87ceeb, 0.4);
+    fillLight.position.set(-15, 10, -10);
+    scene.add(fillLight);
+
+    // 5e. Back light – viền sáng phía sau
+    const backLight = new THREE.DirectionalLight(0xffeebb, 0.5);
+    backLight.position.set(-5, 15, -25);
+    scene.add(backLight);
+
+    /* ==========================================================
+       6. MẶT SÀN – cỏ xanh / đất, phối với cảnh ngoài trời
+       ========================================================== */
+    const groundGeo = new THREE.PlaneGeometry(400, 400);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0x6b8c42,    // Xanh cỏ
+      roughness: 0.95,
+      metalness: 0.0,
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.01;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    /* ==========================================================
+       7. TẢI FILE 3D (.glb)
+       ========================================================== */
+    const overlay = document.getElementById('loading-overlay');
+    const progressFill = document.getElementById('progress-fill');
+    const progressText = document.getElementById('progress-text');
+    const infoBadge = document.getElementById('info-badge');
+
+    // Draco decoder – giải nén mesh bị nén (nếu có)
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/libs/draco/');
+
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+
+    /* ──────────────────────────────────────────────
+       ★ THAY ĐỔI LINK FILE 3D TẠI ĐÂY ★
+       Thay 'cham_tower.glb' bằng đường dẫn tới
+       file .glb / .gltf của bạn.
+       Ví dụ:  './models/my_tower.glb'
+                'https://example.com/model.glb'
+       ────────────────────────────────────────────── */
+    const MODEL_URL = './cham_tower.glb';
+
+    gltfLoader.load(
+      MODEL_URL,
+
+      // ✅ Callback khi tải xong
+      (gltf) => {
+        const model = gltf.scene;
+
+        // Bật shadow cho tất cả mesh con
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+
+        // Tự động canh giữa & scale model
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+
+        // Đặt model về gốc toạ độ (đáy chạm mặt đất)
+        model.position.sub(center);
+        model.position.y += size.y / 2;
+
+        // Điều chỉnh camera theo kích thước model
+        const fitDistance = maxDim * 1.8;
+        camera.position.set(fitDistance * 0.8, fitDistance * 0.5, fitDistance * 0.9);
+        controls.target.set(0, size.y * 0.35, 0);
+        controls.update();
+
+        // Điều chỉnh far plane nếu model lớn
+        camera.far = Math.max(2000, maxDim * 10);
+        camera.updateProjectionMatrix();
+
+        scene.add(model);
+
+        // Ẩn loading
+        overlay.classList.add('hidden');
+        // Hiện badge hướng dẫn, tự ẩn sau 6 giây
+        setTimeout(() => infoBadge.classList.add('show'), 600);
+        setTimeout(() => infoBadge.classList.remove('show'), 7000);
+      },
+
+      // 📊 Callback tiến trình tải
+      (xhr) => {
+        if (xhr.lengthComputable) {
+          const pct = Math.round((xhr.loaded / xhr.total) * 100);
+          progressFill.style.width = pct + '%';
+          progressText.textContent = pct + ' %';
+        } else {
+          // Nếu server không trả Content-Length
+          const mb = (xhr.loaded / 1048576).toFixed(1);
+          progressText.textContent = mb + ' MB đã tải';
+        }
+      },
+
+      // ❌ Callback lỗi
+      (error) => {
+        console.error('Lỗi khi tải model:', error);
+        progressText.textContent = '❌ Không tải được file. Kiểm tra đường dẫn!';
+        progressFill.style.background = '#e74c3c';
+        progressFill.style.width = '100%';
+      }
+    );
+
+    /* ==========================================================
+       8. RESPONSIVE – tự co giãn theo cửa sổ trình duyệt
+       ========================================================== */
+    function onResize() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener('resize', onResize);
+
+    /* ==========================================================
+       9. ANIMATION LOOP
+       ========================================================== */
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      // Cập nhật thời gian cho mây trôi
+      sky.material.uniforms.uTime.value = clock.getElapsedTime();
+      controls.update();          // Cập nhật damping
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+
+</html>
